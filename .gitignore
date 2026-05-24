@@ -13,7 +13,6 @@ env/
 
 # Build artifacts
 build/
-dist/
 *.egg-info/
 
 # Runtime logs

@@ -1,0 +1,13 @@
+{
+  "profiles": [
+    {
+      "name": "Defect Tracker Local",
+      "database_type": "postgres",
+      "project_root": "Y:/SoftwareProjects/FlaskProjects/DefectTracking/Tool_SourceCode/defect-tracker",
+      "env_file": ".env",
+      "maintenance_folder": "database/maintenance",
+      "upload_folder": "uploads",
+      "pg_bin": "C:/Program Files/PostgreSQL/18/bin"
+    }
+  ]
+}
