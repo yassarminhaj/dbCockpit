@@ -31,7 +31,7 @@ After PyInstaller is installed once, rebuild with:
 Output:
 
 ```text
-dist/DefectMaintenanceConsole.exe
+dist/dbCockpit.exe
 ```
 
 The build also copies editable runtime files beside the exe:
@@ -39,6 +39,7 @@ The build also copies editable runtime files beside the exe:
 ```text
 dist/config/profiles.json
 dist/logs/
+dist/templates/
 ```
 
 The exe still expects PostgreSQL client tools and the target project maintenance scripts to exist on the machine. It does not bundle PostgreSQL itself.
@@ -51,6 +52,14 @@ Profiles are stored in:
 config/profiles.json
 ```
 
+The repository keeps a sanitized example at:
+
+```text
+config/profiles.example.json
+```
+
+Runtime `profiles.json` is local-machine configuration and is intentionally not committed.
+
 Each profile points to a project that owns its own maintenance scripts.
 
 Example:
@@ -59,7 +68,7 @@ Example:
 {
   "name": "Defect Tracker Local",
   "database_type": "postgres",
-  "project_root": "Y:/SoftwareProjects/FlaskProjects/DefectTracking/Tool_SourceCode/defect-tracker",
+  "project_root": "C:/path/to/your/project",
   "env_file": ".env",
   "maintenance_folder": "database/maintenance",
   "upload_folder": "uploads",
@@ -69,6 +78,36 @@ Example:
 
 The UI can add, edit, and delete profiles.
 
+## Provisioning Another Project
+
+For a new project, create or edit a profile, then click:
+
+```text
+Provision Scripts
+```
+
+This copies reusable PostgreSQL maintenance scripts into:
+
+```text
+<project_root>/database/maintenance
+```
+
+It also creates:
+
+```text
+<project_root>/database/backups/database
+<project_root>/database/backups/files
+```
+
+The console does not invent project schema or seed data. The target project should provide:
+
+- `database/schema.sql` for Reset Database
+- `database/seed.sql` for Load Test Data
+- `database/smoke_tests.sql` for Run Smoke Tests
+- `database/maintenance/clean_data.sql` only if it needs custom clean-data behavior
+
+If these files are missing, the related action is disabled after Connect.
+
 ## Connect Check
 
 The Connect button validates:
@@ -77,6 +116,7 @@ The Connect button validates:
 - `.env` exists
 - maintenance folder exists
 - required scripts exist
+- optional project SQL files and action availability
 - upload folder exists or can be created
 - `psql`, `pg_dump`, and `pg_restore` are available
 - database can be reached with `select current_database();`
@@ -111,5 +151,7 @@ Helpers:
 ## Reuse For Another Project
 
 Add another profile that points to a different project root and maintenance folder.
+
+Then use Provision Scripts to copy reusable maintenance scripts into that project.
 
 The console orchestrates scripts. It does not duplicate project-specific database logic.

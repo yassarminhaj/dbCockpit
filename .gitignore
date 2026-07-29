@@ -18,6 +18,8 @@ build/
 # Runtime logs
 logs/
 *.log
+config/profiles.json
+dist/config/profiles.json
 
 # Local environment / secrets
 .env

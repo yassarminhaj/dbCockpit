@@ -1,0 +1,13 @@
+{
+  "profiles": [
+    {
+      "name": "Local Project",
+      "database_type": "postgres",
+      "project_root": "C:/path/to/your/project",
+      "env_file": ".env",
+      "maintenance_folder": "database/maintenance",
+      "upload_folder": "uploads",
+      "pg_bin": ""
+    }
+  ]
+}

@@ -1,7 +1,9 @@
 import json
 import os
 import queue
+import shutil
 import subprocess
+import sys
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -10,15 +12,16 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 
 
 APP_TITLE = "Database Maintenance Console"
-if getattr(sys := __import__("sys"), "frozen", False):
+if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).resolve().parent
 else:
     BASE_DIR = Path(__file__).resolve().parent
 CONFIG_DIR = BASE_DIR / "config"
 LOG_DIR = BASE_DIR / "logs"
 PROFILES_PATH = CONFIG_DIR / "profiles.json"
+TEMPLATE_DIR = BASE_DIR / "templates" / "postgres-maintenance"
 
-REQUIRED_SCRIPTS = [
+CORE_MAINTENANCE_SCRIPTS = [
     "backup_all.ps1",
     "restore_all.ps1",
     "backup_database.ps1",
@@ -26,10 +29,16 @@ REQUIRED_SCRIPTS = [
     "backup_files.ps1",
     "restore_files.ps1",
     "clean_files.ps1",
-    "clean_data.sql",
     "reset_database.sql",
     "rebuild_schema.ps1",
     "load_test_data.ps1",
+]
+
+OPTIONAL_PROJECT_FILES = [
+    "database/schema.sql",
+    "database/seed.sql",
+    "database/smoke_tests.sql",
+    "database/maintenance/clean_data.sql",
 ]
 
 
@@ -73,7 +82,7 @@ def get_db_config(profile):
 
     config = {
         "host": "localhost",
-        "port": env_values.get("POSTGRES_PORT", "5432"),
+        "port": env_values.get("POSTGRES_PORT", env_values.get("POSTGRES_HOST_PORT", "5432")),
         "database": env_values.get("POSTGRES_DB", "defect_tracker"),
         "user": env_values.get("POSTGRES_USER", "postgres"),
         "password": env_values.get("POSTGRES_PASSWORD", ""),
@@ -82,6 +91,12 @@ def get_db_config(profile):
     database_url = env_values.get("DATABASE_URL")
     if database_url:
         config.update(parse_database_url(database_url, config))
+
+    # Docker Compose projects often expose PostgreSQL as service host "db"
+    # inside containers and publish it to localhost through POSTGRES_HOST_PORT.
+    if config.get("host") in {"db", "postgres", "database"} and env_values.get("POSTGRES_HOST_PORT"):
+        config["host"] = "localhost"
+        config["port"] = env_values["POSTGRES_HOST_PORT"]
     return config
 
 
@@ -260,7 +275,8 @@ class MaintenanceConsole(tk.Tk):
         ttk.Button(profile_panel, text="Add", command=self.add_profile).grid(row=0, column=2, padx=4)
         ttk.Button(profile_panel, text="Edit", command=self.edit_profile).grid(row=0, column=3, padx=4)
         ttk.Button(profile_panel, text="Delete", command=self.delete_profile).grid(row=0, column=4, padx=4)
-        ttk.Button(profile_panel, text="Connect", command=self.connect_profile).grid(row=0, column=5, padx=(14, 0))
+        ttk.Button(profile_panel, text="Provision Scripts", command=self.provision_profile_scripts).grid(row=0, column=5, padx=(14, 4))
+        ttk.Button(profile_panel, text="Connect", command=self.connect_profile).grid(row=0, column=6, padx=(4, 0))
 
         profile_panel.columnconfigure(1, weight=1)
 
@@ -340,6 +356,12 @@ class MaintenanceConsole(tk.Tk):
                 f"Upload Folder: {profile.get('upload_folder', 'uploads')}",
                 f"PostgreSQL Bin: {profile.get('pg_bin') or '(auto-detect)'}",
             ]
+            db_config = get_db_config(profile)
+            details.extend([
+                f"Database: {db_config['database']}",
+                f"Host/Port: {db_config['host']}:{db_config['port']}",
+                f"User: {db_config['user']}",
+            ])
             self.details_text.insert("end", "\n".join(details))
         self.details_text.configure(state="disabled")
 
@@ -381,6 +403,53 @@ class MaintenanceConsole(tk.Tk):
         self.profile_var.set("")
         self.refresh_profiles()
 
+    def provision_profile_scripts(self):
+        profile = self.get_selected_profile()
+        if not profile:
+            messagebox.showerror("No Profile", "Add or select a profile first.")
+            return
+
+        project_root = Path(profile.get("project_root", ""))
+        if not project_root.exists():
+            messagebox.showerror("Project Root Missing", f"Project root does not exist:\n{project_root}")
+            return
+
+        if not TEMPLATE_DIR.exists():
+            messagebox.showerror("Templates Missing", f"Template folder does not exist:\n{TEMPLATE_DIR}")
+            return
+
+        maintenance_folder = resolve_profile_path(profile, "maintenance_folder", "database/maintenance")
+        backup_folder = project_root / "database" / "backups"
+
+        message = (
+            "Provision reusable maintenance scripts into this project?\n\n"
+            f"Target:\n{maintenance_folder}\n\n"
+            "Existing scripts with the same names will be overwritten."
+        )
+        if not messagebox.askyesno("Provision Scripts", message):
+            return
+
+        maintenance_folder.mkdir(parents=True, exist_ok=True)
+        (backup_folder / "database").mkdir(parents=True, exist_ok=True)
+        (backup_folder / "files").mkdir(parents=True, exist_ok=True)
+
+        copied = []
+        for source in TEMPLATE_DIR.iterdir():
+            if source.is_file():
+                shutil.copy2(source, maintenance_folder / source.name)
+                copied.append(source.name)
+
+        for gitkeep_dir in [backup_folder, backup_folder / "database", backup_folder / "files"]:
+            (gitkeep_dir / ".gitkeep").touch()
+
+        self.clear_log()
+        self.log(f"Provisioned maintenance scripts to {maintenance_folder}")
+        for name in copied:
+            self.log(f"Copied: {name}")
+        self.log("If this project does not have database/schema.sql, create it before using Reset Database.")
+        self.log("If this project does not have database/seed.sql, Load Test Data will not be available.")
+        self.status_var.set("Provisioned. Connect again.")
+
     def connect_profile(self):
         profile = self.get_selected_profile()
         if not profile:
@@ -401,11 +470,15 @@ class MaintenanceConsole(tk.Tk):
 
         maintenance_folder = resolve_profile_path(profile, "maintenance_folder", "database/maintenance")
         if not maintenance_folder.exists():
-            errors.append(f"Maintenance folder does not exist: {maintenance_folder}")
+            errors.append(f"Maintenance folder does not exist: {maintenance_folder}. Use Provision Scripts first.")
         else:
-            for script_name in REQUIRED_SCRIPTS:
+            for script_name in CORE_MAINTENANCE_SCRIPTS:
                 if not (maintenance_folder / script_name).exists():
                     errors.append(f"Required script missing: {script_name}")
+
+        project_file_status = {}
+        for relative_file in OPTIONAL_PROJECT_FILES:
+            project_file_status[relative_file] = (project_root / relative_file).exists()
 
         upload_folder = resolve_profile_path(profile, "upload_folder", "uploads")
         try:
@@ -437,6 +510,8 @@ class MaintenanceConsole(tk.Tk):
         self.log(f"psql: {self.psql_path}")
         self.log(f"pg_dump: {self.pg_dump_path}")
         self.log(f"pg_restore: {self.pg_restore_path}")
+        for relative_file, exists in project_file_status.items():
+            self.log(f"{'Found' if exists else 'Missing'}: {relative_file}")
 
         config = get_db_config(profile)
         command = [
@@ -465,11 +540,25 @@ class MaintenanceConsole(tk.Tk):
         self.connected = True
         self.status_var.set(f"Connected: {config['database']}")
         self.set_actions_enabled(True)
+        self.apply_action_capabilities(project_file_status)
 
     def set_actions_enabled(self, enabled):
         state = "normal" if enabled else "disabled"
         for button in self.action_buttons:
             button.configure(state=state)
+
+    def apply_action_capabilities(self, project_file_status):
+        labels_to_files = {
+            "Reset Database": "database/schema.sql",
+            "Load Test Data": "database/seed.sql",
+            "Run Smoke Tests": "database/smoke_tests.sql",
+            "Clean Data": "database/maintenance/clean_data.sql",
+        }
+        for button in self.action_buttons:
+            label = button.cget("text")
+            required_file = labels_to_files.get(label)
+            if required_file and not project_file_status.get(required_file, False):
+                button.configure(state="disabled")
 
     def run_script_async(self, label, command, cwd, env=None):
         self.start_log_file(label)
